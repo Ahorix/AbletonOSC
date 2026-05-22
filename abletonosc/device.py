@@ -243,6 +243,73 @@ class DeviceHandler(AbletonOSCHandler):
                     pass
             return (count,)
 
+        #--------------------------------------------------------------------------------
+        # CompressorDevice: sidechain routing
+        # Only CompressorDevice has a specialized LOM class with routing properties.
+        # class_name == "Compressor2" in the LOM.
+        #--------------------------------------------------------------------------------
+        def compressor_get_available_input_routing_types(device, params):
+            return tuple(rt.display_name for rt in device.available_input_routing_types)
+
+        def compressor_get_available_input_routing_channels(device, params):
+            return tuple(ch.display_name for ch in device.available_input_routing_channels)
+
+        def compressor_get_input_routing_type(device, params):
+            return device.input_routing_type.display_name,
+
+        def compressor_set_input_routing_type(device, params):
+            type_name = str(params[0])
+            for rt in device.available_input_routing_types:
+                if rt.display_name == type_name:
+                    device.input_routing_type = rt
+                    return
+            self.logger.warning("Compressor: couldn't find input routing type: %s" % type_name)
+
+        def compressor_get_input_routing_channel(device, params):
+            return device.input_routing_channel.display_name,
+
+        def compressor_set_input_routing_channel(device, params):
+            channel_name = str(params[0])
+            for ch in device.available_input_routing_channels:
+                if ch.display_name == channel_name:
+                    device.input_routing_channel = ch
+                    return
+            self.logger.warning("Compressor: couldn't find input routing channel: %s" % channel_name)
+
+        self.osc_server.add_handler("/live/device/get/compressor/available_input_routing_types",
+                                    create_device_callback(compressor_get_available_input_routing_types))
+        self.osc_server.add_handler("/live/device/get/compressor/available_input_routing_channels",
+                                    create_device_callback(compressor_get_available_input_routing_channels))
+        self.osc_server.add_handler("/live/device/get/compressor/input_routing_type",
+                                    create_device_callback(compressor_get_input_routing_type))
+        self.osc_server.add_handler("/live/device/set/compressor/input_routing_type",
+                                    create_device_callback(compressor_set_input_routing_type))
+        self.osc_server.add_handler("/live/device/get/compressor/input_routing_channel",
+                                    create_device_callback(compressor_get_input_routing_channel))
+        self.osc_server.add_handler("/live/device/set/compressor/input_routing_channel",
+                                    create_device_callback(compressor_set_input_routing_channel))
+
+        def _require_compressor(func):
+            def wrapper(device, params):
+                if device.class_name != "Compressor2":
+                    self.logger.warning("flat_device compressor endpoint called on %s (not Compressor2)" % device.class_name)
+                    return
+                return func(device, params)
+            return wrapper
+
+        self.osc_server.add_handler("/live/flat_device/get/compressor/available_input_routing_types",
+                                    flat_device_callback(_require_compressor(compressor_get_available_input_routing_types)))
+        self.osc_server.add_handler("/live/flat_device/get/compressor/available_input_routing_channels",
+                                    flat_device_callback(_require_compressor(compressor_get_available_input_routing_channels)))
+        self.osc_server.add_handler("/live/flat_device/get/compressor/input_routing_type",
+                                    flat_device_callback(_require_compressor(compressor_get_input_routing_type)))
+        self.osc_server.add_handler("/live/flat_device/set/compressor/input_routing_type",
+                                    flat_device_callback(_require_compressor(compressor_set_input_routing_type)))
+        self.osc_server.add_handler("/live/flat_device/get/compressor/input_routing_channel",
+                                    flat_device_callback(_require_compressor(compressor_get_input_routing_channel)))
+        self.osc_server.add_handler("/live/flat_device/set/compressor/input_routing_channel",
+                                    flat_device_callback(_require_compressor(compressor_set_input_routing_channel)))
+
         self.osc_server.add_handler("/live/flat_device/refresh_parameters", flat_device_callback(flat_refresh_parameters))
         self.osc_server.add_handler("/live/flat_device/get/name", flat_device_callback(flat_get_name))
         self.osc_server.add_handler("/live/flat_device/get/class_name", flat_device_callback(flat_get_class_name))
