@@ -255,6 +255,224 @@ class SongHandler(AbletonOSCHandler):
                 cue_point.jump()
         self.osc_server.add_handler("/live/song/cue_point/jump", partial(song_jump_to_cue_point, self.song))
 
+        #--------------------------------------------------------------------------------
+        # Song: move_device(device, target_track, position)
+        # Moves a device from one track to another.
+        # Args: source_track_idx, device_idx, dest_track_idx, dest_position
+        #--------------------------------------------------------------------------------
+        def song_move_device(params):
+            src_track_idx = int(params[0])
+            device_idx = int(params[1])
+            dst_track_idx = int(params[2])
+            dst_position = int(params[3])
+            device = self.song.tracks[src_track_idx].devices[device_idx]
+            dst_track = self.song.tracks[dst_track_idx]
+            self.song.move_device(device, dst_track, dst_position)
+            self.logger.info("Moved device %d from track %d to track %d position %d" %
+                             (device_idx, src_track_idx, dst_track_idx, dst_position))
+        self.osc_server.add_handler("/live/song/move_device", song_move_device)
+
+        #--------------------------------------------------------------------------------
+        # Browser: load item from user library by path
+        # Args: path segments as a single slash-separated string, e.g.
+        #   "Audio Effects/Audio Effect Rack/_routing_template.adg"
+        # Optionally prefix with track_index to select target track first.
+        # Format: /live/browser/load_user_library_item track_index(int) path(str)
+        #    or:  /live/browser/load_user_library_item path(str)
+        #--------------------------------------------------------------------------------
+        def browser_load_user_library_item(params):
+            app = Live.Application.get_application()
+            browser = app.browser
+
+            if len(params) >= 2 and isinstance(params[0], (int, float)):
+                track_index = int(params[0])
+                path_str = str(params[1])
+                self.song.view.selected_track = self.song.tracks[track_index]
+            else:
+                path_str = str(params[0])
+
+            segments = [s for s in path_str.split("/") if s]
+            current = browser.user_library
+
+            for segment in segments:
+                found = False
+                for child in current.iter_children:
+                    if child.name == segment:
+                        current = child
+                        found = True
+                        break
+                if not found:
+                    self.logger.error("Browser: could not find '%s' in '%s'" % (segment, path_str))
+                    return ("error", "not_found", segment)
+
+            if not current.is_loadable:
+                self.logger.error("Browser: item '%s' is not loadable" % path_str)
+                return ("error", "not_loadable", path_str)
+
+            self.logger.info("Browser: loading '%s'" % current.name)
+            self.manager.schedule_message(1, partial(browser.load_item, current))
+            return ("ok", current.name)
+
+        self.osc_server.add_handler("/live/browser/load_user_library_item", browser_load_user_library_item)
+
+        #--------------------------------------------------------------------------------
+        # Browser: load a built-in audio effect onto a track
+        # Navigates browser.audio_effects instead of browser.user_library.
+        # Format: /live/browser/load_audio_effect track_index(int) path(str)
+        #    or:  /live/browser/load_audio_effect path(str)
+        # Path example: "Utility"
+        #--------------------------------------------------------------------------------
+        def browser_load_audio_effect(params):
+            app = Live.Application.get_application()
+            browser = app.browser
+
+            if len(params) >= 2 and isinstance(params[0], (int, float)):
+                track_index = int(params[0])
+                path_str = str(params[1])
+                self.song.view.selected_track = self.song.tracks[track_index]
+            else:
+                path_str = str(params[0])
+
+            segments = [s for s in path_str.split("/") if s]
+            current = browser.audio_effects
+
+            for segment in segments:
+                found = False
+                for child in current.iter_children:
+                    if child.name == segment:
+                        current = child
+                        found = True
+                        break
+                if not found:
+                    self.logger.error("Browser: could not find '%s' in audio_effects path '%s'" % (segment, path_str))
+                    return ("error", "not_found", segment)
+
+            if not current.is_loadable:
+                self.logger.error("Browser: audio effect '%s' is not loadable" % path_str)
+                return ("error", "not_loadable", path_str)
+
+            self.logger.info("Browser: loading audio effect '%s'" % current.name)
+            self.manager.schedule_message(1, partial(browser.load_item, current))
+            return ("ok", current.name)
+
+        self.osc_server.add_handler("/live/browser/load_audio_effect", browser_load_audio_effect)
+
+        #--------------------------------------------------------------------------------
+        # Browser: list items under browser.audio_effects
+        # Format: /live/browser/list_audio_effects [path(str)]
+        #--------------------------------------------------------------------------------
+        def browser_list_audio_effects(params):
+            app = Live.Application.get_application()
+            browser = app.browser
+            path_str = str(params[0]) if params else ""
+
+            current = browser.audio_effects
+            if path_str:
+                segments = [s for s in path_str.split("/") if s]
+                for segment in segments:
+                    found = False
+                    for child in current.iter_children:
+                        if child.name == segment:
+                            current = child
+                            found = True
+                            break
+                    if not found:
+                        return ("error", "not_found", segment)
+
+            names = []
+            for child in current.iter_children:
+                names.append(child.name)
+            return tuple(names)
+
+        self.osc_server.add_handler("/live/browser/list_audio_effects", browser_list_audio_effects)
+
+        #--------------------------------------------------------------------------------
+        # Browser: generic navigation + loading for any browser root
+        # Roots: plugins, instruments, audio_effects, midi_effects, drums,
+        #        sounds, packs, samples, clips, max_for_live
+        # Format: /live/browser/list root(str) [path(str)]
+        #         /live/browser/load root(str) track_index(int) path(str)
+        #--------------------------------------------------------------------------------
+        def _browser_navigate(browser, root_name, path_str):
+            root = getattr(browser, root_name, None)
+            if root is None:
+                return None, ("error", "unknown_root", root_name)
+            current = root
+            if path_str:
+                segments = [s for s in path_str.split("/") if s]
+                for segment in segments:
+                    found = False
+                    for child in current.iter_children:
+                        if child.name == segment:
+                            current = child
+                            found = True
+                            break
+                    if not found:
+                        return None, ("error", "not_found", segment)
+            return current, None
+
+        def browser_list(params):
+            app = Live.Application.get_application()
+            browser = app.browser
+            root_name = str(params[0])
+            path_str = str(params[1]) if len(params) > 1 else ""
+            node, err = _browser_navigate(browser, root_name, path_str)
+            if err:
+                return err
+            names = []
+            for child in node.iter_children:
+                names.append(child.name)
+            return tuple(names)
+
+        def browser_load(params):
+            app = Live.Application.get_application()
+            browser = app.browser
+            root_name = str(params[0])
+            track_index = int(params[1])
+            path_str = str(params[2])
+            self.song.view.selected_track = self.song.tracks[track_index]
+            node, err = _browser_navigate(browser, root_name, path_str)
+            if err:
+                return err
+            if not node.is_loadable:
+                return ("error", "not_loadable", path_str)
+            self.logger.info("Browser: loading '%s' from %s" % (node.name, root_name))
+            self.manager.schedule_message(1, partial(browser.load_item, node))
+            return ("ok", node.name)
+
+        self.osc_server.add_handler("/live/browser/list", browser_list)
+        self.osc_server.add_handler("/live/browser/load", browser_load)
+
+        #--------------------------------------------------------------------------------
+        # Browser: list items at a path in user library
+        # Returns names of children at the given path.
+        # Format: /live/browser/list_user_library path(str)
+        #--------------------------------------------------------------------------------
+        def browser_list_user_library(params):
+            app = Live.Application.get_application()
+            browser = app.browser
+            path_str = str(params[0]) if params else ""
+
+            current = browser.user_library
+            if path_str:
+                segments = [s for s in path_str.split("/") if s]
+                for segment in segments:
+                    found = False
+                    for child in current.iter_children:
+                        if child.name == segment:
+                            current = child
+                            found = True
+                            break
+                    if not found:
+                        return ("error", "not_found", segment)
+
+            names = []
+            for child in current.iter_children:
+                names.append(child.name)
+            return tuple(names)
+
+        self.osc_server.add_handler("/live/browser/list_user_library", browser_list_user_library)
+
         self.osc_server.add_handler("/live/song/cue_point/add_or_delete", partial(self._call_method, self.song, "set_or_delete_cue"))
         def song_cue_point_set_name(song, params: Tuple[Any] = ()):
             cue_point_index = params[0]
@@ -282,6 +500,27 @@ class SongHandler(AbletonOSCHandler):
 
         self.osc_server.add_handler("/live/song/start_listen/beat", start_beat_listener)
         self.osc_server.add_handler("/live/song/stop_listen/beat", stop_beat_listener)
+
+        def memory_pressure_relief(params: Tuple[Any] = ()):
+            try:
+                module_dir = os.path.dirname(os.path.realpath(__file__))
+                if module_dir not in sys.path:
+                    sys.path.insert(0, module_dir)
+                parent_dir = os.path.dirname(module_dir)
+                if parent_dir not in sys.path:
+                    sys.path.insert(0, parent_dir)
+                import _memory_relief
+                freed = _memory_relief.pressure_relief()
+                self.logger.info("malloc_zone_pressure_relief freed %d bytes" % freed)
+                return (int(freed),)
+            except ImportError as e:
+                self.logger.error("_memory_relief import failed: %s (path: %s)" % (str(e), sys.path[:5]))
+                return (-2,)
+            except Exception as e:
+                self.logger.error("pressure_relief failed: %s" % str(e))
+                return (-1,)
+
+        self.osc_server.add_handler("/live/memory/pressure_relief", memory_pressure_relief)
 
     def current_song_time_changed(self):
         #--------------------------------------------------------------------------------

@@ -25,10 +25,10 @@ class DeviceHandler(AbletonOSCHandler):
         ]
         properties_r = [
             "class_name",
-            "name",
             "type"
         ]
         properties_rw = [
+            "name",
         ]
 
         for method in methods:
@@ -140,3 +140,288 @@ class DeviceHandler(AbletonOSCHandler):
         self.osc_server.add_handler("/live/device/get/parameter/name", create_device_callback(device_get_parameter_name))
         self.osc_server.add_handler("/live/device/start_listen/parameter/value", create_device_callback(device_get_parameter_value_listener, include_ids = True))
         self.osc_server.add_handler("/live/device/stop_listen/parameter/value", create_device_callback(device_get_parameter_remove_value_listener, include_ids = True))
+
+        #--------------------------------------------------------------------------------
+        # PluginDevice: Get all plugin parameters via bank system
+        # Returns all parameters across all banks, not just configured ones
+        #--------------------------------------------------------------------------------
+        def device_get_plugin_all_params(device, params: Tuple[Any] = ()):
+            """Get all parameter names from a plugin device using get_parameter_names."""
+            result = []
+            try:
+                # get_parameter_names returns the full list of AU/VST parameter names
+                names = device.get_parameter_names(512)  # request up to 512 names
+                result.append(len(names))
+                for name in names:
+                    result.append(name)
+            except Exception as e:
+                result.append("error:" + str(e))
+                # Fallback: try with different count
+                try:
+                    names = device.get_parameter_names()
+                    result.append(len(names))
+                    for name in names:
+                        result.append(name)
+                except Exception as e2:
+                    result.append("error2:" + str(e2))
+            return tuple(result)
+
+        def device_get_presets(device, params: Tuple[Any] = ()):
+            """Get preset list from a plugin device."""
+            result = []
+            try:
+                presets = list(device.presets)
+                result.append(len(presets))
+                for p in presets:
+                    result.append(str(p))
+            except Exception as e:
+                result.append("error:" + str(e))
+            return tuple(result)
+
+        self.osc_server.add_handler("/live/device/get/plugin_all_params", create_device_callback(device_get_plugin_all_params))
+        self.osc_server.add_handler("/live/device/get/presets", create_device_callback(device_get_presets))
+
+        #--------------------------------------------------------------------------------
+        # Flat device addressing — walks into racks/chains so nested devices
+        # can be accessed by a single flat index per track.
+        #--------------------------------------------------------------------------------
+        def _flatten_devices(device_list):
+            """Recursively collect all devices, walking into racks/chains."""
+            result = []
+            for device in device_list:
+                result.append(device)
+                if device.can_have_chains:
+                    for chain in device.chains:
+                        result.extend(_flatten_devices(chain.devices))
+            return result
+
+        def flat_device_callback(func):
+            def callback(params: Tuple[Any]):
+                track_index = int(params[0])
+                flat_index = int(params[1])
+                all_devices = _flatten_devices(self.song.tracks[track_index].devices)
+                device = all_devices[flat_index]
+                rv = func(device, params[2:])
+                if rv is not None:
+                    return (track_index, flat_index, *rv)
+            return callback
+
+        def flat_get_name(device, params):
+            return device.name,
+
+        def flat_get_class_name(device, params):
+            return device.class_name,
+
+        def flat_get_parameters_name(device, params):
+            return tuple(p.name for p in device.parameters)
+
+        def flat_get_parameters_value(device, params):
+            return tuple(p.value for p in device.parameters)
+
+        def flat_get_parameters_min(device, params):
+            return tuple(p.min for p in device.parameters)
+
+        def flat_get_parameters_max(device, params):
+            return tuple(p.max for p in device.parameters)
+
+        def flat_set_parameter_value(device, params):
+            param_index = int(params[0])
+            param_value = float(params[1])
+            device.parameters[param_index].value = param_value
+
+        def flat_introspect(device, params):
+            """Return all non-dunder attributes of a device for LOM exploration."""
+            attrs = [a for a in dir(device) if not a.startswith('_')]
+            return tuple(attrs)
+
+        self.osc_server.add_handler("/live/flat_device/introspect", flat_device_callback(flat_introspect))
+
+        def flat_refresh_parameters(device, params):
+            """Re-set all parameter values wrapped in begin/end gesture to force plugin GUI update."""
+            count = 0
+            for param in device.parameters:
+                try:
+                    val = param.value
+                    param.begin_gesture()
+                    param.value = val
+                    param.end_gesture()
+                    count += 1
+                except Exception:
+                    pass
+            return (count,)
+
+        #--------------------------------------------------------------------------------
+        # CompressorDevice: sidechain routing
+        # Only CompressorDevice has a specialized LOM class with routing properties.
+        # class_name == "Compressor2" in the LOM.
+        #--------------------------------------------------------------------------------
+        def compressor_get_available_input_routing_types(device, params):
+            return tuple(rt.display_name for rt in device.available_input_routing_types)
+
+        def compressor_get_available_input_routing_channels(device, params):
+            return tuple(ch.display_name for ch in device.available_input_routing_channels)
+
+        def compressor_get_input_routing_type(device, params):
+            return device.input_routing_type.display_name,
+
+        def compressor_set_input_routing_type(device, params):
+            type_name = str(params[0])
+            for rt in device.available_input_routing_types:
+                if rt.display_name == type_name:
+                    device.input_routing_type = rt
+                    return
+            self.logger.warning("Compressor: couldn't find input routing type: %s" % type_name)
+
+        def compressor_get_input_routing_channel(device, params):
+            return device.input_routing_channel.display_name,
+
+        def compressor_set_input_routing_channel(device, params):
+            channel_name = str(params[0])
+            for ch in device.available_input_routing_channels:
+                if ch.display_name == channel_name:
+                    device.input_routing_channel = ch
+                    return
+            self.logger.warning("Compressor: couldn't find input routing channel: %s" % channel_name)
+
+        self.osc_server.add_handler("/live/device/get/compressor/available_input_routing_types",
+                                    create_device_callback(compressor_get_available_input_routing_types))
+        self.osc_server.add_handler("/live/device/get/compressor/available_input_routing_channels",
+                                    create_device_callback(compressor_get_available_input_routing_channels))
+        self.osc_server.add_handler("/live/device/get/compressor/input_routing_type",
+                                    create_device_callback(compressor_get_input_routing_type))
+        self.osc_server.add_handler("/live/device/set/compressor/input_routing_type",
+                                    create_device_callback(compressor_set_input_routing_type))
+        self.osc_server.add_handler("/live/device/get/compressor/input_routing_channel",
+                                    create_device_callback(compressor_get_input_routing_channel))
+        self.osc_server.add_handler("/live/device/set/compressor/input_routing_channel",
+                                    create_device_callback(compressor_set_input_routing_channel))
+
+        def _require_compressor(func):
+            def wrapper(device, params):
+                if device.class_name != "Compressor2":
+                    self.logger.warning("flat_device compressor endpoint called on %s (not Compressor2)" % device.class_name)
+                    return
+                return func(device, params)
+            return wrapper
+
+        self.osc_server.add_handler("/live/flat_device/get/compressor/available_input_routing_types",
+                                    flat_device_callback(_require_compressor(compressor_get_available_input_routing_types)))
+        self.osc_server.add_handler("/live/flat_device/get/compressor/available_input_routing_channels",
+                                    flat_device_callback(_require_compressor(compressor_get_available_input_routing_channels)))
+        self.osc_server.add_handler("/live/flat_device/get/compressor/input_routing_type",
+                                    flat_device_callback(_require_compressor(compressor_get_input_routing_type)))
+        self.osc_server.add_handler("/live/flat_device/set/compressor/input_routing_type",
+                                    flat_device_callback(_require_compressor(compressor_set_input_routing_type)))
+        self.osc_server.add_handler("/live/flat_device/get/compressor/input_routing_channel",
+                                    flat_device_callback(_require_compressor(compressor_get_input_routing_channel)))
+        self.osc_server.add_handler("/live/flat_device/set/compressor/input_routing_channel",
+                                    flat_device_callback(_require_compressor(compressor_set_input_routing_channel)))
+
+        #--------------------------------------------------------------------------------
+        # Rack chain access — get/set chain names, set sidechain on a chain's compressor
+        #--------------------------------------------------------------------------------
+        def _find_first_compressor(devices):
+            """Recursively find the first Compressor2, walking into sub-racks."""
+            for dev in devices:
+                if dev.class_name == "Compressor2":
+                    return dev
+                if dev.can_have_chains:
+                    for chain in dev.chains:
+                        found = _find_first_compressor(chain.devices)
+                        if found:
+                            return found
+            return None
+
+        def device_get_chain_names(params: Tuple[Any]):
+            track_index, device_index = int(params[0]), int(params[1])
+            device = self.song.tracks[track_index].devices[device_index]
+            if not device.can_have_chains:
+                return (track_index, device_index, "error", "not a rack")
+            return (track_index, device_index) + tuple(c.name for c in device.chains)
+
+        def device_set_chain_name(params: Tuple[Any]):
+            track_index, device_index, chain_index = int(params[0]), int(params[1]), int(params[2])
+            name = str(params[3])
+            device = self.song.tracks[track_index].devices[device_index]
+            device.chains[chain_index].name = name
+
+        def device_chain_set_compressor_sidechain(params: Tuple[Any]):
+            track_index, device_index, chain_index = int(params[0]), int(params[1]), int(params[2])
+            source_name = str(params[3])
+            channel_name = str(params[4])
+            device = self.song.tracks[track_index].devices[device_index]
+            chain = device.chains[chain_index]
+            comp = _find_first_compressor(chain.devices)
+            if not comp:
+                self.logger.warning("Chain %d has no Compressor2" % chain_index)
+                return (track_index, device_index, chain_index, "error", "no compressor")
+            for rt in comp.available_input_routing_types:
+                if rt.display_name == source_name:
+                    comp.input_routing_type = rt
+                    break
+            else:
+                self.logger.warning("Compressor: couldn't find input routing type: %s" % source_name)
+                return (track_index, device_index, chain_index, "error", "bad source")
+            for ch in comp.available_input_routing_channels:
+                if ch.display_name == channel_name:
+                    comp.input_routing_channel = ch
+                    break
+            return (track_index, device_index, chain_index, "ok")
+
+        self.osc_server.add_handler("/live/device/get/chain_names", device_get_chain_names)
+        self.osc_server.add_handler("/live/device/set/chain/name", device_set_chain_name)
+        self.osc_server.add_handler("/live/device/chain/set/compressor_sidechain", device_chain_set_compressor_sidechain)
+
+        def flat_get_chain_names(device, params):
+            if not device.can_have_chains:
+                return ("error", "not a rack")
+            return tuple(c.name for c in device.chains)
+
+        def flat_set_chain_name(device, params):
+            chain_index = int(params[0])
+            name = str(params[1])
+            device.chains[chain_index].name = name
+
+        def flat_set_chain_mute(device, params):
+            # Used instead of routing a spare chain's compressor sidechain to "No Input",
+            # which crashes Live 11.3 when set through the API (2026-09-28).
+            chain_index = int(params[0])
+            device.chains[chain_index].mute = bool(int(params[1]))
+
+        def flat_chain_set_compressor_sidechain(device, params):
+            chain_index = int(params[0])
+            source_name = str(params[1])
+            channel_name = str(params[2])
+            if not device.can_have_chains:
+                return (chain_index, "error", "not a rack")
+            chain = device.chains[chain_index]
+            comp = _find_first_compressor(chain.devices)
+            if not comp:
+                self.logger.warning("Chain %d has no Compressor2" % chain_index)
+                return (chain_index, "error", "no compressor")
+            for rt in comp.available_input_routing_types:
+                if rt.display_name == source_name:
+                    comp.input_routing_type = rt
+                    break
+            else:
+                self.logger.warning("Compressor: couldn't find input routing type: %s" % source_name)
+                return (chain_index, "error", "bad source")
+            for ch in comp.available_input_routing_channels:
+                if ch.display_name == channel_name:
+                    comp.input_routing_channel = ch
+                    break
+            return (chain_index, "ok")
+
+        self.osc_server.add_handler("/live/flat_device/get/chain_names", flat_device_callback(flat_get_chain_names))
+        self.osc_server.add_handler("/live/flat_device/set/chain/name", flat_device_callback(flat_set_chain_name))
+        self.osc_server.add_handler("/live/flat_device/set/chain/mute", flat_device_callback(flat_set_chain_mute))
+        self.osc_server.add_handler("/live/flat_device/chain/set/compressor_sidechain", flat_device_callback(flat_chain_set_compressor_sidechain))
+
+        self.osc_server.add_handler("/live/flat_device/refresh_parameters", flat_device_callback(flat_refresh_parameters))
+        self.osc_server.add_handler("/live/flat_device/get/name", flat_device_callback(flat_get_name))
+        self.osc_server.add_handler("/live/flat_device/get/class_name", flat_device_callback(flat_get_class_name))
+        self.osc_server.add_handler("/live/flat_device/get/parameters/name", flat_device_callback(flat_get_parameters_name))
+        self.osc_server.add_handler("/live/flat_device/get/parameters/value", flat_device_callback(flat_get_parameters_value))
+        self.osc_server.add_handler("/live/flat_device/get/parameters/min", flat_device_callback(flat_get_parameters_min))
+        self.osc_server.add_handler("/live/flat_device/get/parameters/max", flat_device_callback(flat_get_parameters_max))
+        self.osc_server.add_handler("/live/flat_device/set/parameter/value", flat_device_callback(flat_set_parameter_value))
