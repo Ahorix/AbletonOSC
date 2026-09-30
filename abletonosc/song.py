@@ -8,6 +8,18 @@ from typing import Tuple, Any
 
 from .handler import AbletonOSCHandler
 
+
+def _select_track_unfolded(song, track_index):
+    """Select a track for browser loading. Live refuses to select a track inside a folded
+    group ("The given Track is invisible"), which left browser loads without a reply, so
+    unfold its parent groups first."""
+    track = song.tracks[track_index]
+    group = track.group_track
+    while group is not None:
+        group.fold_state = False
+        group = group.group_track
+    song.view.selected_track = track
+
 class SongHandler(AbletonOSCHandler):
     def __init__(self, manager):
         super().__init__(manager)
@@ -287,7 +299,7 @@ class SongHandler(AbletonOSCHandler):
             if len(params) >= 2 and isinstance(params[0], (int, float)):
                 track_index = int(params[0])
                 path_str = str(params[1])
-                self.song.view.selected_track = self.song.tracks[track_index]
+                _select_track_unfolded(self.song, track_index)
             else:
                 path_str = str(params[0])
 
@@ -329,7 +341,7 @@ class SongHandler(AbletonOSCHandler):
             if len(params) >= 2 and isinstance(params[0], (int, float)):
                 track_index = int(params[0])
                 path_str = str(params[1])
-                self.song.view.selected_track = self.song.tracks[track_index]
+                _select_track_unfolded(self.song, track_index)
             else:
                 path_str = str(params[0])
 
@@ -430,7 +442,7 @@ class SongHandler(AbletonOSCHandler):
             root_name = str(params[0])
             track_index = int(params[1])
             path_str = str(params[2])
-            self.song.view.selected_track = self.song.tracks[track_index]
+            _select_track_unfolded(self.song, track_index)
             node, err = _browser_navigate(browser, root_name, path_str)
             if err:
                 return err
