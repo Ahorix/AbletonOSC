@@ -417,6 +417,34 @@ class DeviceHandler(AbletonOSCHandler):
         self.osc_server.add_handler("/live/flat_device/set/chain/mute", flat_device_callback(flat_set_chain_mute))
         self.osc_server.add_handler("/live/flat_device/chain/set/compressor_sidechain", flat_device_callback(flat_chain_set_compressor_sidechain))
 
+        # A Compressor used directly as an "insert" (not inside a rack chain)
+        def flat_set_compressor_sidechain(device, params):
+            source_name = str(params[0])
+            channel_name = str(params[1])
+            if device.class_name != "Compressor2":
+                return ("error", "not a Compressor")
+            if source_name == "No Input":
+                return ("error", "refusing 'No Input' (crashes Live 11.3)")
+            for rt in device.available_input_routing_types:
+                if rt.display_name == source_name:
+                    device.input_routing_type = rt
+                    break
+            else:
+                return ("error", "bad source")
+            for ch in device.available_input_routing_channels:
+                if ch.display_name == channel_name:
+                    device.input_routing_channel = ch
+                    break
+            return ("ok",)
+
+        def flat_get_compressor_sidechain(device, params):
+            if device.class_name != "Compressor2":
+                return ("error", "not a Compressor")
+            return (device.input_routing_type.display_name, device.input_routing_channel.display_name)
+
+        self.osc_server.add_handler("/live/flat_device/set/compressor_sidechain", flat_device_callback(flat_set_compressor_sidechain))
+        self.osc_server.add_handler("/live/flat_device/get/compressor_sidechain", flat_device_callback(flat_get_compressor_sidechain))
+
         self.osc_server.add_handler("/live/flat_device/refresh_parameters", flat_device_callback(flat_refresh_parameters))
         self.osc_server.add_handler("/live/flat_device/get/name", flat_device_callback(flat_get_name))
         self.osc_server.add_handler("/live/flat_device/get/class_name", flat_device_callback(flat_get_class_name))
