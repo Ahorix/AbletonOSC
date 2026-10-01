@@ -11,6 +11,8 @@ be unit tested with fakes (tests_offline/test_midimap_table.py).
 
 Entry dict:
     {"ch": 0-15, "kind": "cc"|"note", "num": 0-127, "mode": int (0 = absolute),
+     "encoder": "absolute" | "relative_two_compliment" | "relative_binary_offset" | "relative_signed_bit"
+                (Live.MidiMap.MapMode names; overrides "mode" when set),
      "min": float|None, "max": float|None,
      "target": {"type": "param", "track": str, "device": [str, ...], "param": str}
              | {"type": "clip", "track": str, "clip": str}}
@@ -216,6 +218,16 @@ class MidiMapTable:
         return out
 
     @staticmethod
+    def _map_mode(entry, midi_map):
+        mode = midi_map.MapMode.absolute
+        encoder = entry.get("encoder")
+        if encoder and encoder != "absolute":
+            return getattr(midi_map.MapMode, encoder, mode)
+        if entry.get("mode"):
+            return midi_map.MapMode.values.get(entry["mode"], mode)
+        return mode
+
+    @staticmethod
     def _full_range(entry, param):
         lo, hi = entry.get("min"), entry.get("max")
         if lo is None and hi is None:
@@ -245,10 +257,7 @@ class MidiMapTable:
             if native:
                 try:
                     if kind == "cc":
-                        mode = midi_map.MapMode.absolute
-                        if entry.get("mode"):
-                            mode = midi_map.MapMode.values.get(entry["mode"], mode)
-                        midi_map.map_midi_cc(midi_map_handle, obj, ch, num, mode, True)
+                        midi_map.map_midi_cc(midi_map_handle, obj, ch, num, self._map_mode(entry, midi_map), True)
                     else:
                         midi_map.map_midi_note(midi_map_handle, obj, ch, num)
                     continue
@@ -299,10 +308,28 @@ class MidiMapTable:
         return True
 
 
+def relative_delta(encoder, value):
+    """Steps encoded by an endless encoder in the given Live map mode."""
+    if encoder == "relative_two_compliment":
+        return value if value < 64 else value - 128
+    if encoder == "relative_binary_offset":
+        return value - 64
+    if encoder == "relative_signed_bit":
+        return -(value & 0x3F) if value & 0x40 else (value & 0x3F)
+    return None
+
+
 def apply_to_parameter(entry, param, kind, value):
     lo = param.min if entry.get("min") is None else max(param.min, float(entry["min"]))
     hi = param.max if entry.get("max") is None else min(param.max, float(entry["max"]))
     quantized = getattr(param, "is_quantized", False)
+    delta = relative_delta(entry.get("encoder"), value) if kind == "cc" else None
+    if delta is not None:
+        v = param.value + delta * (hi - lo) / 127.0
+        if quantized:
+            v = round(v)
+        param.value = min(hi, max(lo, v))
+        return
     if kind == "note":
         if value == 0:
             return  # note off: toggles act on note on only

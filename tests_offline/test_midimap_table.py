@@ -63,6 +63,7 @@ class Song:
 class FakeMidiMap:
     class MapMode:
         absolute = "abs"
+        relative_two_compliment = "rel2c"
         values = {0: "abs", 2: "rel"}
 
     def __init__(self):
@@ -176,6 +177,25 @@ class MidiMapTableTest(unittest.TestCase):
         self.assertEqual(p.value, 0)
         mt.apply_to_parameter({}, p, "cc", 80)
         self.assertEqual(p.value, 1)
+
+    def test_relative_encoders(self):
+        self.table.set_scope("rig", [
+            entry(0, 45, param("lead_osszeolv", ["fx rack"], "Delay"), encoder="relative_two_compliment"),
+            entry(0, 47, param("lead_osszeolv", ["Mixer"], "Volume"), encoder="relative_binary_offset", min=0, max=0.85),
+        ])
+        mm = FakeMidiMap()
+        self.table.build(self.song, "h", mm, "sh")
+        self.assertIn(("map_cc", "Delay", 0, 45, "rel2c"), mm.calls)
+        self.assertIn(("fwd_cc", 0, 47), mm.calls)  # ranged -> forwarded
+        vol = self.song.tracks[0].mixer_device.volume
+        vol.value = 0.8
+        for _ in range(20):
+            self.table.handle_midi((0xB0, 47, 70))  # +6 steps each
+        self.assertAlmostEqual(vol.value, 0.85)  # capped at max
+        self.table.handle_midi((0xB0, 47, 0))  # -64 steps
+        self.assertAlmostEqual(vol.value, 0.85 - 64 * 0.85 / 127)
+        self.assertEqual(mt.relative_delta("relative_two_compliment", 127), -1)
+        self.assertEqual(mt.relative_delta("relative_signed_bit", 0x41), -1)
 
     def test_device_tree_lists_nested_and_mixer(self):
         tree = mt.device_tree(self.song.tracks[0])
