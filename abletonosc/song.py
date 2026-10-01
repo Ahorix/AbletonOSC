@@ -120,6 +120,17 @@ class SongHandler(AbletonOSCHandler):
             return tuple(self.song.tracks[index].name for index in range(track_index_min, track_index_max))
         self.osc_server.add_handler("/live/song/get/track_names", song_get_track_names)
 
+        def song_get_track_group_parents(_):
+            """For every track, the index of its direct parent group track, or -1 if top-level."""
+            # Live returns a fresh Python wrapper per access, so match with == (as
+            # export_structure does) rather than by object identity
+            tracks = list(self.song.tracks)
+            return tuple(
+                tracks.index(track.group_track) if track.group_track is not None else -1
+                for track in tracks
+            )
+        self.osc_server.add_handler("/live/song/get/track_group_parents", song_get_track_group_parents)
+
         def song_get_track_data(params):
             """
             Retrieve one more properties of a block of tracks and their clips.
