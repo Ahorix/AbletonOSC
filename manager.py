@@ -19,6 +19,8 @@ class Manager(ControlSurface):
 
         self.handlers = []
         self.midi_mappings = {}
+        self.midimap_table = None
+        self._tracks_listener_installed = False
 
         try:
             self.osc_server = abletonosc.OSCServer()
@@ -89,6 +91,13 @@ class Manager(ControlSurface):
         self.osc_server.add_handler("/live/api/set/log_level", set_log_level_callback)
         self.osc_server.add_handler("/live/api/show_message", show_message_callback)
 
+        # Name-based MIDI mappings, persisted next to this script so they survive restarts.
+        # Re-created on /live/api/reload so a reloaded midimap_table module takes effect.
+        self.midimap_table = abletonosc.midimap_table.MidiMapTable(
+            os.path.join(os.path.dirname(os.path.realpath(__file__)), "midimap.json"))
+        self.midimap_table.load()
+        self._install_tracks_listener()
+
         with self.component_guard():
             self.handlers = [
                 abletonosc.SongHandler(self),
@@ -130,6 +139,8 @@ class Manager(ControlSurface):
             importlib.reload(abletonosc.song)
             importlib.reload(abletonosc.track)
             importlib.reload(abletonosc.view)
+            importlib.reload(abletonosc.midimap_table)
+            importlib.reload(abletonosc.midimap)
             importlib.reload(abletonosc)
         except Exception as e:
             exc = traceback.format_exc()
@@ -137,11 +148,33 @@ class Manager(ControlSurface):
 
         self.clear_api()
         self.init_api()
+        self.request_rebuild_midi_map()
         logger.info("Reloaded code")
+
+    def _install_tracks_listener(self):
+        # Tracks imported or deleted later still get their mappings: rebuild the MIDI map.
+        if self._tracks_listener_installed:
+            return
+        try:
+            self.song.add_tracks_listener(self._on_tracks_changed)
+            self.song.add_return_tracks_listener(self._on_tracks_changed)
+            self._tracks_listener_installed = True
+        except Exception as e:
+            logger.warning("Could not install tracks listener: %s" % e)
+
+    def _on_tracks_changed(self):
+        # Not allowed to change Live state from inside a notification; defer to the next tick.
+        self.schedule_message(1, self.request_rebuild_midi_map)
 
     def disconnect(self):
         self.show_message("Disconnecting...")
         logger.info("Disconnecting...")
+        if self._tracks_listener_installed:
+            try:
+                self.song.remove_tracks_listener(self._on_tracks_changed)
+                self.song.remove_return_tracks_listener(self._on_tracks_changed)
+            except Exception:
+                pass
         self.stop_logging()
         self.osc_server.shutdown()
         super().disconnect()
@@ -156,3 +189,19 @@ class Manager(ControlSurface):
             parameter = self.midi_mappings[(channel, cc)]
             Live.MidiMap.map_midi_cc(midi_map_handle, parameter, channel, cc, Live.MidiMap.MapMode.absolute, 1)
             logger.debug("Mapped CC %d on channel %d to parameter %s" % (cc, channel, parameter.name))
+
+        if self.midimap_table is not None:
+            try:
+                self.midimap_table.build(self.song, midi_map_handle, Live.MidiMap, self._c_instance.handle())
+            except Exception:
+                logger.warning("MIDI map table build failed: %s" % traceback.format_exc())
+
+    def receive_midi(self, midi_bytes):
+        """
+        Called by Live for MIDI forwarded to this script (MIDI map table triggers that need
+        scaling, several targets or clip launches).
+        """
+        # Only table triggers are forwarded to this script (it registers no controls), so
+        # anything else is ignored rather than handed to the framework's control registry.
+        if self.midimap_table is not None and not self.midimap_table.handle_midi(midi_bytes):
+            logger.debug("Ignoring forwarded MIDI %s" % str(midi_bytes))
