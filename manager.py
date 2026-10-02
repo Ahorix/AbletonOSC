@@ -196,6 +196,14 @@ class Manager(ControlSurface):
             except Exception:
                 logger.warning("MIDI map table build failed: %s" % traceback.format_exc())
 
+    def receive_midi_chunk(self, midi_chunk):
+        """
+        Live 11 delivers forwarded MIDI in chunks; the framework's own chunk handler would
+        bypass receive_midi below, so unpack here.
+        """
+        for midi_bytes in midi_chunk:
+            self.receive_midi(midi_bytes)
+
     def receive_midi(self, midi_bytes):
         """
         Called by Live for MIDI forwarded to this script (MIDI map table triggers that need

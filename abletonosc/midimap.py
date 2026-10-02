@@ -72,6 +72,18 @@ class MidiMapHandler(AbletonOSCHandler):
                 return (-1, offset)
             return (len(names), offset, *names[offset:offset + PAGE])
 
+        def get_param_range(params: Tuple[Any] = ()):
+            """[track, json path, param] -> (min, max, min as shown in Live, max as shown in Live)"""
+            track = midimap_table.find_track(self.song, str(params[0]))
+            if track is None:
+                return ()
+            param, _ = midimap_table.resolve_target(self.song, {
+                "type": "param", "track": str(params[0]), "device": json.loads(params[1]), "param": str(params[2])})
+            if param is None:
+                return ()
+            show = lambda v: param.str_for_value(v) if hasattr(param, "str_for_value") else str(v)
+            return (float(param.min), float(param.max), show(param.min), show(param.max))
+
         def rebuild(params: Tuple[Any] = ()):
             self.manager.request_rebuild_midi_map()
 
@@ -83,4 +95,5 @@ class MidiMapHandler(AbletonOSCHandler):
         self.osc_server.add_handler("/live/midimap/get/tracks", get_tracks)
         self.osc_server.add_handler("/live/midimap/get/devices", get_devices)
         self.osc_server.add_handler("/live/midimap/get/params", get_params)
+        self.osc_server.add_handler("/live/midimap/get/param_range", get_param_range)
         self.osc_server.add_handler("/live/midimap/rebuild", rebuild)
